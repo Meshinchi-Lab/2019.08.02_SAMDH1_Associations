@@ -1,0 +1,379 @@
+---
+title: "SAMDH1 in Adult and Pediatric AML"
+author: "Jenny Smith"
+date: "June 24, 2019"
+output: html_document
+---
+
+# Set-up
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center', fig.height = 8, fig.width = 10)
+knitr::opts_knit$set(root.dir = '/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/2019.08.02_SAMDH1_Associations/')
+options(stringsAsFactors = FALSE)
+```
+
+```{r message=FALSE}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(stringr)
+library(reshape2)
+library(tidyr)
+library(tibble)
+library(ggpubr)
+library(DeGSEA)
+library(gridExtra)
+library(purrr)
+getwd()
+```
+
+```{r}
+source("~/scripts/RNAseq_Analysis/Waterfallplots_Expression_Distribution/Waterfall_Barplot_Function_2017.05.22.r")
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/R/in_progress/ggplot_Themes_Function.r")
+source("~/scripts/survival_analysis/Survplot_Functions_2018.10.24.r")
+```
+
+
+#Read in the expression data 
+
+```{r}
+TPMs <- readRDS("~/RNA_seq_Analysis/0000.00.03_Expression_Matrices/TARGET_AML_RBD_Kallisto_Quant_GeneLevel_TPM.RDS")
+
+head(TPMs[,1:5])
+dim(TPMs)
+```
+
+
+#Read in the CDEs 
+
+```{r}
+Groups <- read.csv("~/reference_mapping-files/TARGET_AML_RBD_Cohorts_forDE_5.20.19.csv") %>% 
+  add_row(USI=grep("^BM|^RO", colnames(TPMs), value=TRUE)) %>%
+  mutate_at(vars(CBFA2T3.GLIS2.forDEGs:Rare.Fusions), .funs = ~ifelse(is.na(.), "NBM", .)) %>% 
+  set_colnames(gsub(".forDEGs","",colnames(.))) %>%
+  mutate(Categories=pheno_bars(., "USI", cols=c("CBFA2T3.GLIS2", "CBFB.MYH11", 
+                                                "KMT2A.ELL", "KMT2A.MLLT1",
+                                                "KMT2A.MLLT10","KMT2A.MLLT3",
+                                                "KMT2A.MLLT4", "NUP98.KDM5A", 
+                                                "NUP98.NSD1", "RUNX1.RUNX1T1"))) %>% 
+  mutate(Categories=case_when(
+    grepl("NBM", Categories) ~ "NBM", 
+    grepl("OtherAML", Categories) & grepl("MLL", Cytogenetic.Category.1) ~ "KM2TA-X",
+    grepl("OtherAML", Categories) & grepl("Normal", Cytogenetic.Category.1) ~ "Normal_Cyto", 
+    grepl("OtherAML", Categories) & grepl("Other", Cytogenetic.Category.1) ~ "Other_Cyto", 
+    TRUE ~ Categories))
+  
+
+head(Groups)
+# tail(Groups)
+dim(Groups)
+```
+
+```{r}
+table(Groups$Categories)
+```
+
+```{r}
+CDE <- read.csv("~/reference_mapping-files/TARGET_AML_RBD_withLncRNAs_LSC17_CDE_8.02.19.csv") %>% 
+  select(-contains("ENSG0"))
+
+# dim(CDE)
+# colnames(CDE)
+```
+
+
+#Waterfall plots & Boxplots
+
+```{r}
+pheno1 <- Groups$Cytogenetic.Category.1 %>%
+  set_names(Groups$USI)
+
+pheno2 <- Groups$Cytogenetic.Category.2 %>% 
+  gsub("Unknown","OtherAML",.) %>%
+  set_names(Groups$USI)
+
+pheno3 <- Groups$Rare.Fusions %>% 
+  gsub("Unknown","OtherAML",.) %>%
+  set_names(Groups$USI)
+
+table(pheno1, useNA = "always")
+table(pheno2, useNA = "always")
+table(pheno3, useNA = "always")
+```
+
+```{r}
+TPMs.subset <- TPMs[grep("ENSG00000101347", rownames(TPMs)), ]
+rownames(TPMs.subset) <- "SAMDH1"
+head(TPMs.subset[,1:5])
+dim(TPMs.subset)
+```
+
+```{r }
+SAMDH1.plots <- arrangeGrob(grobs=lapply(list(pheno1,pheno2,pheno3), 
+                                       function(p) waterfallPlot(expnMatrix = TPMs.subset,  
+                                                                geneName = "SAMDH1", 
+                                                                phenoVector = p, 
+                                                                unit = "TPM")), 
+                          ncol = 3, nrow = 1)
+
+
+# plot(SAMDH1.plots[[5]])
+```
+
+```{r fig.width=16, fig.height=4}
+plot(SAMDH1.plots)
+```
+
+```{r }
+ggsave("TARGET_AML_SAMDH1_Expression_TPMs.png",SAMDH1.plots,
+       device = "png", dpi=200,
+       width = 17, height = 4, units = "in")
+
+```
+
+```{r warning=FALSE}
+SAMDH1.data <- lapply(list(pheno1,pheno2,pheno3), 
+                                       function(p) waterfallPlot(expnMatrix = TPMs.subset,  
+                                                                geneName = "SAMDH1", 
+                                                                phenoVector = p, 
+                                                                unit = "TPM", 
+                                                                returnData = TRUE)[[1]]) %>% 
+  bind_cols() %>%
+  mutate(Group=factor(ifelse(grepl("^BM|^RO",var),"NBM","AML"),levels=c("NBM","AML")), 
+         log2_TPM=log2(val+1)) %>%
+  select(USI=var,Group,Gene,TPM=val,log2_TPM,Cytogenetic.Category.1=Status,Cytogenetic.Category.2=Status1, Rare.Fusions=Status2) %>% 
+  left_join(., CDE, by="USI") %>% 
+  arrange(Group)
+
+# head(SAMDH1.data)
+dim(SAMDH1.data) #1462   62
+# lapply(SAMDH1.data, head)
+```
+
+
+```{r fig.width=14,fig.height=4}
+hist <- ggplot(data=SAMDH1.data, aes(x=TPM, fill=Group, color=Group)) + 
+  geom_histogram(binwidth = 5, position = "dodge") + 
+  theme_classic() + 
+  labs(y="Number of Patients",x="SAMDH1 Expression (TPM)") + 
+  theme(text = element_text(size=18, color="black")) +
+  scale_fill_brewer(palette = "Paired") +
+  scale_color_brewer(palette = "Paired")
+
+bplot.all <- ggplot(data=SAMDH1.data, aes(y=log2_TPM,x=Group, fill=Group)) + 
+  geom_violin(color="black",draw_quantiles = c(0.5)) +
+  # geom_boxplot() + 
+  theme_classic() + 
+  labs(x="",y="SAMDH1 (log2 TPM)") +
+  theme(text = element_text(size=18, color="black")) +
+   scale_fill_brewer(palette = "Paired")
+
+grid.arrange(hist,bplot.all, ncol=2)
+```
+
+
+```{r fig.height=5, fig.width=16}
+bplot.1 <- ggplot(data=SAMDH1.data, aes(y=log2_TPM,x=Cytogenetic.Category.1, fill=Cytogenetic.Category.1)) + 
+  geom_boxplot() +
+  theme_classic() + 
+  labs(x="",y="SAMDH1 (log2 TPM)") +
+  theme(text = element_text(size=18, color="black"), 
+        legend.position = "bottom", 
+        axis.text.x = element_text(angle=25, hjust=1, vjust=1),
+        legend.title = element_blank()) +
+   scale_fill_brewer(palette = "Paired") + 
+  guides(fill=guide_legend(ncol=3))
+
+bplot.2 <- ggplot(data=SAMDH1.data, aes(y=log2_TPM,x=Cytogenetic.Category.2, fill=Cytogenetic.Category.2)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(x="",y="SAMDH1 (log2 TPM)") +
+  theme(text = element_text(size=18, color="black"),
+        legend.position = "bottom",
+        axis.text.x = element_text(angle=25, hjust=1, vjust=1),
+        legend.title = element_blank()) +
+   scale_fill_brewer(palette = "Paired") +
+  guides(fill=guide_legend(ncol=3))
+
+
+
+bplot.3 <- ggplot(data=SAMDH1.data, aes(y=log2_TPM,x=Rare.Fusions, fill=Rare.Fusions)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(x="",y="SAMDH1 (log2 TPM)") +
+  theme(text = element_text(size=18, color="black"),
+        axis.text.x = element_text(angle=25, hjust=1, vjust=1),
+        legend.position = "bottom",
+        legend.title = element_blank()) +
+   scale_fill_brewer(palette = "Paired") +
+  guides(fill=guide_legend(ncol=2))
+
+
+bplots.cyto <- grid.arrange(bplot.1, bplot.2, bplot.3, ncol=3)
+
+# ggsave("TARGET_AML_SAMDH1_boxplots_log2_TPMs.png",bplots.cyto,
+#        device = "png", dpi=200,
+#        width = 16, height = 5, units = "in")
+```
+
+
+```{r}
+SAMDH1.data %>% 
+  group_by(Cytogenetic.Category.2) %>% 
+  summarise(mean=mean(TPM), SD=sd(TPM),median=median(TPM), max=max(TPM))
+```
+
+
+#SAMDH1 Expression and Outcome
+
+```{r}
+library(survminer)
+library(gtools)
+```
+
+```{r}
+cut.points <- filter(SAMDH1.data, !is.na(Event.ID)) %>% 
+  mutate(quintiles=quantcut(log2_TPM,q=5, labels=c(paste0("q",1:5))), 
+         deciles=quantcut(log2_TPM,q=10, labels=c(paste0("q",1:10)))) %>% 
+  
+  group_by(Cytogenetic.Category.1) %>% 
+  mutate(quintiles_byCyto1=quantcut(log2_TPM,q=5, labels=c(paste0("q",1:5)))) %>% 
+  ungroup()
+
+
+
+range(cut.points$log2_TPM)
+table(cut.points$deciles)
+```
+
+```{r fig.width=5, fig.height=3}
+KM <- Surv(time = cut.points$OS.time..days./365.25, event = cut.points$OS.ID)
+cox.cont <- coxph(KM~ log2_TPM, data = cut.points)
+summary(cox.cont)
+
+assump <- cox.zph(cox.cont)
+assump$table #is not proportional over time
+# summary(lm(assump$x~assump$y))
+# plot(assump$y ~ assump$x)
+# plot(lm(assump$x~assump$y))
+```
+
+
+```{r fig.height=6, fig.width=6}
+KM.dec <- KM.plots(df=cut.points, 
+                   group_vars = NULL, 
+                   covariate = "deciles",
+                   cohort = "1031", 
+                   riskTable = FALSE)
+
+plot(KM.dec$OS[[1]])
+plot(KM.dec$EFS[[1]])
+```
+
+```{r fig.height=6, fig.width=6}
+KM.quint <- KM.plots(df=cut.points, 
+                   group_vars = NULL, 
+                   covariate = "quintiles",
+                   cohort = "1031", 
+                   riskTable = FALSE)
+
+
+plot(KM.quint$OS[[1]])
+plot(KM.quint$EFS[[1]])
+```
+
+```{r fig.height=9.5, fig.width=15}
+KM.quint.cyto <- KM.plots(df=cut.points, 
+                   group_vars = "Cytogenetic.Category.1", 
+                   covariate = "quintiles_byCyto1",
+                   cohort = "1031", 
+                   riskTable = FALSE)
+
+
+png("TARGET_AML_SAMDH1_OS_inCytoGroups_KM.png", height = 9.5, width = 14, units="in", res=200)
+grid.arrange(grobs=KM.quint.cyto$OS[-2], ncol=3)
+dev.off()
+# plot(KM.quint$EFS[[1]])
+```
+
+Loglik converged before variable  1,2,3,4 ; beta may be infinite. Loglik converged before variable  2 ; beta may be infinite.
+
+```{r}
+res.cut <- surv_cutpoint(data = cut.points,time="OS.time..days.", event="OS.ID", variables=c("log2_TPM"),minprop=0.1)
+
+summary(res.cut)
+```
+
+```{r}
+plot(res.cut)
+```
+
+
+
+#Boxplots/Waterfall plots with TCGA and TARGET  
+
+```{r}
+TCGA_Targ <- get(load("~/RNA_seq_Analysis/0000.00.03_Expression_Matrices/TcgaTargetGtex_NormBlood_AML_rsem_geneSymbol_dupGenesRemoved_tpm.RData"))
+
+head(TCGA_Targ[,1:5])
+# dim(TCGA_Targ) 58,531 and 738  samples
+```
+
+```{r}
+pheno.toil <- ifelse(grepl("GTEX", colnames(subset)), "Normal.WholeBlood", 
+                     ifelse(grepl("TARGET", colnames(subset)), "TARGET.AML", "TCGA.AML")) %>%
+  set_names(colnames(subset))
+
+table(pheno.toil)
+```
+
+```{r}
+
+TAR.TCGA.GTEX <- waterfallPlot(expnMatrix = subset,geneName = "SAMDH1",phenoVector =  pheno.toil, unit="TPM", returnData = TRUE) 
+
+# tiff("SAMDH1_TCGA_TPM_waterfallplot.tiff", height = 5, width = 8, units = "in", res=600)
+TAR.TCGA.GTEX$Plot +  ylim(0,8) +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(title="SAMDH1 RNA-Seq Expression TARGET, TCGA, and GTEX")
+# dev.off()
+```
+
+```{r}
+TAR.TCGA.GTEX$Data %>% 
+  group_by(Status) %>%
+  summarise_at(vars(val), funs(mean,median,max,min))
+  
+```
+
+```{r}
+forDist <- subset %>%
+  rownames_to_column("gene") %>%
+  filter(gene == "SAMDH1") %>%
+  select(-gene) %>%
+  gather(var, value) %>%
+  mutate(log2.TPM=log2(value+1)) %>%
+  mutate(Group=ifelse(grepl("GTEX", var), "Normal.WholeBlood", 
+                     ifelse(grepl("TARGET", var), "TARGET.AML", "TCGA.AML"))) %>%
+  mutate(Group=factor(Group, levels=c("Normal.WholeBlood","TARGET.AML", "TCGA.AML" )))
+  
+
+# forDist
+table(forDist$Group)
+```
+
+```{r}
+comparisons <- list(c("Normal.WholeBlood","TARGET.AML"),
+                    c("TARGET.AML", "TCGA.AML" ),
+                    c("Normal.WholeBlood","TCGA.AML" ))
+
+ggboxplot(forDist, x="Group", y="log2.TPM", color="Group", palette="jco") +
+  stat_compare_means(comparisons = comparisons) +
+  ylim(0,10) +
+  stat_compare_means(label.y = 9.5)
+
+```
+
+
+
